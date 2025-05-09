@@ -1,39 +1,28 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-from pymongo import MongoClient
-from googlemaps import GoogleMapsScraper
+import boto3
+import json
+import os
 from datetime import datetime, timedelta
 import argparse
 import logging
 import sys
 
-DB_URL = 'mongodb://localhost:27017/'
-DB_NAME = 'googlemaps'
-COLLECTION_NAME = 'review'
+from googlemaps import GoogleMapsScraper  # make sure this is importable
 
-class Monitor:
+BUCKET_NAME = 'naturals-reviews'
 
-    def __init__(self, url_file, from_date, mongourl=DB_URL):
+class MonitorS3:
 
-        # load urls file
+    def __init__(self, url_file, from_date):
         with open(url_file, 'r') as furl:
-            self.urls = [u[:-1] for u in furl]
+            self.urls = [u.strip() for u in furl]
 
-        # define MongoDB connection
-        self.client = MongoClient(mongourl)
-
-        # min date review to scrape
         self.min_date_review = datetime.strptime(from_date, '%Y-%m-%d')
-
-        # logging
         self.logger = self.__get_logger()
+        self.s3 = boto3.client('s3')
 
     def scrape_gm_reviews(self):
-        # set connection to DB
-        collection = self.client[DB_NAME][COLLECTION_NAME]
-
-        # init scraper and incremental add reviews
-        # TO DO: pass logger as parameter to log into one single file?
         with GoogleMapsScraper() as scraper:
             for url in self.urls:
                 try:
@@ -41,102 +30,79 @@ class Monitor:
                     if error == 0:
                         stop = False
                         offset = 0
-                        n_new_reviews = 0
+                        all_reviews = []
                         while not stop:
                             rlist = scraper.get_reviews(offset)
                             for r in rlist:
-                                # calculate review date and compare to input min_date_review
                                 r['timestamp'] = self.__parse_relative_date(r['relative_date'])
-                                stop = self.__stop(r, collection)
+                                stop = self.__stop(r)
                                 if not stop:
-                                    collection.insert_one(r)
-                                    n_new_reviews += 1
+                                    all_reviews.append(r)
                                 else:
                                     break
                             offset += len(rlist)
 
-                        # log total number
-                        self.logger.info('{} : {} new reviews'.format(url, n_new_reviews))
+                        if all_reviews:
+                            self.save_to_s3(url, all_reviews)
+                            self.logger.info(f'{url} : {len(all_reviews)} new reviews')
+                        else:
+                            self.logger.info(f'{url} : No new reviews')
                     else:
-                        self.logger.warning('Sorting reviews failed for {}'.format(url))
-
+                        self.logger.warning(f'Sorting failed for {url}')
                 except Exception as e:
                     exc_type, exc_obj, exc_tb = sys.exc_info()
                     fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                    self.logger.error(f'{url}: {exc_type}, {fname}, {exc_tb.tb_lineno}')
 
-                    self.logger.error('{}: {}, {}, {}'.format(url, exc_type, fname, exc_tb.tb_lineno))
+    def __stop(self, r):
+        return r['timestamp'] < self.min_date_review
 
+    def save_to_s3(self, url, reviews):
+        today = datetime.today().strftime('%Y-%m-%d')
+        slug = url.split('/')[4] if '/' in url else 'place'
+        key = f"{slug}/{today}.json"
+        self.s3.put_object(Bucket=BUCKET_NAME, Key=key, Body=json.dumps(reviews, indent=2, default=str))
 
     def __parse_relative_date(self, string_date):
         curr_date = datetime.now()
         split_date = string_date.split(' ')
-
         n = split_date[0]
         delta = split_date[1]
-
-        if delta == 'year':
-            return curr_date - timedelta(days=365)
-        elif delta == 'years':
-            return curr_date - timedelta(days=365 * int(n))
-        elif delta == 'month':
-            return curr_date - timedelta(days=30)
-        elif delta == 'months':
-            return curr_date - timedelta(days=30 * int(n))
-        elif delta == 'week':
-            return curr_date - timedelta(weeks=1)
-        elif delta == 'weeks':
-            return curr_date - timedelta(weeks=int(n))
-        elif delta == 'day':
-            return curr_date - timedelta(days=1)
-        elif delta == 'days':
-            return curr_date - timedelta(days=int(n))
-        elif delta == 'hour':
-            return curr_date - timedelta(hours=1)
-        elif delta == 'hours':
-            return curr_date - timedelta(hours=int(n))
-        elif delta == 'minute':
-            return curr_date - timedelta(minutes=1)
-        elif delta == 'minutes':
-            return curr_date - timedelta(minutes=int(n))
-        elif delta == 'moments':
-            return curr_date - timedelta(seconds=1)
-
-
-    def __stop(self, r, collection):
-        is_old_review = collection.find_one({'id_review': r['id_review']})
-        if is_old_review is None and r['timestamp'] >= self.min_date_review:
-            return False
-        else:
-            return True
+        return curr_date - {
+            'year': timedelta(days=365),
+            'years': timedelta(days=365 * int(n)),
+            'month': timedelta(days=30),
+            'months': timedelta(days=30 * int(n)),
+            'week': timedelta(weeks=1),
+            'weeks': timedelta(weeks=int(n)),
+            'day': timedelta(days=1),
+            'days': timedelta(days=int(n)),
+            'hour': timedelta(hours=1),
+            'hours': timedelta(hours=int(n)),
+            'minute': timedelta(minutes=1),
+            'minutes': timedelta(minutes=int(n)),
+            'moments': timedelta(seconds=1)
+        }.get(delta, timedelta())
 
     def __get_logger(self):
-        # create logger
-        logger = logging.getLogger('monitor')
+        logger = logging.getLogger('monitor_s3')
         logger.setLevel(logging.DEBUG)
-        # create console handler and set level to debug
-        fh = logging.FileHandler('monitor.log')
+        fh = logging.FileHandler('monitor_s3.log')
         fh.setLevel(logging.DEBUG)
-        # create formatter
         formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-        # add formatter to ch
         fh.setFormatter(formatter)
-        # add ch to logger
         logger.addHandler(fh)
-
         return logger
 
 
 if __name__ == '__main__':
-
-    parser = argparse.ArgumentParser(description='Monitor Google Maps places')
+    parser = argparse.ArgumentParser(description='Monitor Google Maps reviews and store in S3')
     parser.add_argument('--i', type=str, default='urls.txt', help='target URLs file')
-    parser.add_argument('--from-date', type=str) # start date in format: YYYY-MM-DD
-
+    parser.add_argument('--from-date', type=str, required=True, help='Start date in format: YYYY-MM-DD')
     args = parser.parse_args()
 
-    monitor = Monitor(args.i, args.from_date)
-
+    monitor = MonitorS3(args.i, args.from_date)
     try:
         monitor.scrape_gm_reviews()
     except Exception as e:
-        monitor.logger.error('Not handled error: {}'.format(e))
+        monitor.logger.error(f'Unhandled error: {e}')
