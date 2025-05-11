@@ -4,7 +4,8 @@ import logging
 import re
 import time
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
+from dateutil.relativedelta import relativedelta
 
 import numpy as np
 import pandas as pd
@@ -74,7 +75,7 @@ class GoogleMapsScraper:
         recent_rating_bt.click()
 
         # wait to load review (ajax call)
-        time.sleep(5)
+        time.sleep(4)
 
         return 0
 
@@ -126,33 +127,91 @@ class GoogleMapsScraper:
 
 
 
-    def get_reviews(self, offset):
+    # def get_reviews(self, offset):
+    #
+    #     # scroll to load reviews
+    #     self.__scroll()
+    #
+    #     # wait for other reviews to load (ajax)
+    #     time.sleep(4)
+    #
+    #     # expand review text
+    #     self.__expand_reviews()
+    #
+    #     # parse reviews
+    #     response = BeautifulSoup(self.driver.page_source, 'html.parser')
+    #     # TODO: Subject to changes
+    #     rblock = response.find_all('div', class_='jftiEf fontBodyMedium')
+    #     parsed_reviews = []
+    #     for index, review in enumerate(rblock):
+    #         if index >= offset:
+    #             r = self.__parse(review)
+    #             parsed_reviews.append(r)
+    #
+    #             # logging to std out
+    #             print(r)
+    #
+    #     return parsed_reviews
 
-        # scroll to load reviews
+    def get_reviews(self, offset, url):
+        """
+        Scrape reviews and include the Place ID in the review metadata.
+
+        Parameters:
+            offset (int): The starting point for reviews to scrape.
+            url (str): The URL containing the Place ID.
+
+        Returns:
+            list[dict]: List of reviews with metadata, including Place ID.
+        """
+        # Scroll to load reviews
         self.__scroll()
 
-        # wait for other reviews to load (ajax)
-        time.sleep(4)
+        # Wait for other reviews to load (ajax)
+        time.sleep(5)
 
-        # expand review text
+        # Expand review text
         self.__expand_reviews()
 
-        # parse reviews
+        # Extract Place ID from URL
+        place_id = self.extract_place_id_from_url(url)
+
+        # Parse reviews
         response = BeautifulSoup(self.driver.page_source, 'html.parser')
-        # TODO: Subject to changes
         rblock = response.find_all('div', class_='jftiEf fontBodyMedium')
         parsed_reviews = []
+
         for index, review in enumerate(rblock):
             if index >= offset:
                 r = self.__parse(review)
+                r['place_id'] = place_id  # Add Place ID to each review's metadata
                 parsed_reviews.append(r)
 
-                # logging to std out
+                # Logging to stdout
                 print(r)
 
         return parsed_reviews
 
 
+    def extract_place_id_from_url(self, url):
+        """
+        Extract the Place ID from a given Google Maps URL.
+
+        Parameters:
+            url (str): The Google Maps URL containing the Place ID.
+
+        Returns:
+            str: The extracted Place ID or None if not found.
+        """
+        import re
+        try:
+            if "q=place_id:" in url:
+                place_id = re.search(r'q=place_id:([^&]+)', url).group(1)
+                return place_id
+            return None
+        except Exception as e:
+            self.logger.warning(f"Failed to extract Place ID from URL {url}: {e}")
+            return None
 
     # need to use different url wrt reviews one to have all info
     def get_account(self, url):
@@ -166,9 +225,11 @@ class GoogleMapsScraper:
         resp = BeautifulSoup(self.driver.page_source, 'html.parser')
 
         place_data = self.__parse_place(resp, url)
+        # Add Place ID from URL
+        place_id = self.extract_place_id_from_url(url)
+        place_data['place_id'] = place_id
 
         return place_data
-
 
     def __parse(self, review):
 
@@ -188,6 +249,12 @@ class GoogleMapsScraper:
 
         try:
             # TODO: Subject to changes
+            place_id = review['place_id']
+        except Exception as e:
+            place_id = None
+
+        try:
+            # TODO: Subject to changes
             review_text = self.__filter_string(review.find('span', class_='wiI7pd').text)
         except Exception as e:
             review_text = None
@@ -198,11 +265,35 @@ class GoogleMapsScraper:
         except Exception as e:
             rating = None
 
+        # try:
+        #     # TODO: Subject to changes
+        #     relative_date = review.find('span', class_='rsqaWe').text
+        # except Exception as e:
+        #     relative_date = None
+
         try:
-            # TODO: Subject to changes
+            # Extract relative date
             relative_date = review.find('span', class_='rsqaWe').text
+
+            # Convert relative date to an actual date
+            retrieval_date = datetime.now()
+            if "day" in relative_date:
+                days_ago = int(relative_date.split()[0])
+                review_date = retrieval_date - timedelta(days=days_ago)
+            elif "week" in relative_date:
+                weeks_ago = int(relative_date.split()[0])
+                review_date = retrieval_date - timedelta(weeks=weeks_ago)
+            elif "month" in relative_date:
+                months_ago = int(relative_date.split()[0])
+                review_date = retrieval_date - relativedelta(months=months_ago)
+            elif "year" in relative_date:
+                years_ago = int(relative_date.split()[0])
+                review_date = retrieval_date - relativedelta(years=years_ago)
+            else:
+                review_date = retrieval_date  # Default to retrieval date if unknown format
         except Exception as e:
             relative_date = None
+            review_date = None
 
         try:
             n_reviews = review.find('div', class_='RfnDt').text.split(' ')[3]
@@ -220,7 +311,7 @@ class GoogleMapsScraper:
         # depends on language, which depends on geolocation defined by Google Maps
         # custom mapping to transform into date should be implemented
         item['relative_date'] = relative_date
-
+        item['review_date'] = review_date
         # store datetime of scraping and apply further processing to calculate
         # correct date as retrieval_date - time(relative_date)
         item['retrieval_date'] = datetime.now()
@@ -228,7 +319,8 @@ class GoogleMapsScraper:
         item['username'] = username
         item['n_review_user'] = n_reviews
         #item['n_photo_user'] = n_photos  ## not available anymore
-        item['url_user'] = user_url
+        #item['url_user'] = user_url
+        item['place_id'] = place_id
 
         return item
 
@@ -335,11 +427,23 @@ class GoogleMapsScraper:
             self.driver.execute_script("arguments[0].click();", button)
 
 
+    # def __scroll(self):
+    #     # TODO: Subject to changes
+    #     scrollable_div = self.driver.find_element(By.CSS_SELECTOR,'div.m6QErb.DxyBCb.kA9KIf.dS8AEf')
+    #     self.driver.execute_script('arguments[0].scrollTop = arguments[0].scrollHeight', scrollable_div)
+    #     #self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+
     def __scroll(self):
-        # TODO: Subject to changes
-        scrollable_div = self.driver.find_element(By.CSS_SELECTOR,'div.m6QErb.DxyBCb.kA9KIf.dS8AEf')
-        self.driver.execute_script('arguments[0].scrollTop = arguments[0].scrollHeight', scrollable_div)
-        #self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        try:
+            # ✅ Wait for reviews container before scrolling
+            scrollable_div = WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, 'div.m6QErb.DxyBCb.kA9KIf.dS8AEf'))
+            )
+            self.driver.execute_script('arguments[0].scrollTop = arguments[0].scrollHeight', scrollable_div)
+            time.sleep(2)  # Allow time for reviews to load
+        except Exception as e:
+            self.logger.error(f"Scrolling failed: {e}")
+
 
 
     def __get_logger(self):

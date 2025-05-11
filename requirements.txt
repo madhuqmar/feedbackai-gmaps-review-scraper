@@ -12,3 +12,4 @@ requests==2.32.0
 selenium==4.17.2
 termcolor==2.4.0
 webdriver-manager==3.5.2
+boto
