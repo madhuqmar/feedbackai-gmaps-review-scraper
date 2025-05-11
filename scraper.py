@@ -7,6 +7,10 @@ import csv
 import io
 from termcolor import colored
 
+from dotenv import load_dotenv
+load_dotenv(".env")
+
+
 ind = {'most_relevant': 0, 'newest': 1, 'highest_rating': 2, 'lowest_rating': 3}
 BUCKET_NAME = 'naturals-reviews'
 
