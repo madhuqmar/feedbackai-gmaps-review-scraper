@@ -89,4 +89,3 @@ if __name__ == '__main__':
     s3_key = f"combined/{args.o}"
     headers = HEADER_W_SOURCE if args.source else HEADER
     upload_csv_to_s3(all_reviews, headers, s3_key)
-
