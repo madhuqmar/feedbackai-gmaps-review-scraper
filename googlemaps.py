@@ -153,6 +153,45 @@ class GoogleMapsScraper:
     #
     #     return parsed_reviews
 
+    # def get_reviews(self, offset, url):
+    #     """
+    #     Scrape reviews and include the Place ID in the review metadata.
+
+    #     Parameters:
+    #         offset (int): The starting point for reviews to scrape.
+    #         url (str): The URL containing the Place ID.
+
+    #     Returns:
+    #         list[dict]: List of reviews with metadata, including Place ID.
+    #     """
+    #     # Scroll to load reviews
+    #     self.__scroll()
+
+    #     # Wait for other reviews to load (ajax)
+    #     time.sleep(5)
+
+    #     # Expand review text
+    #     self.__expand_reviews()
+
+    #     # Extract Place ID from URL
+    #     place_id = self.extract_place_id_from_url(url)
+
+    #     # Parse reviews
+    #     response = BeautifulSoup(self.driver.page_source, 'html.parser')
+    #     rblock = response.find_all('div', class_='jftiEf fontBodyMedium')
+    #     parsed_reviews = []
+
+    #     for index, review in enumerate(rblock):
+    #         if index >= offset:
+    #             r = self.__parse(review)
+    #             r['place_id'] = place_id  # Add Place ID to each review's metadata
+    #             parsed_reviews.append(r)
+
+    #             # Logging to stdout
+    #             print(r)
+
+    #     return parsed_reviews
+
     def get_reviews(self, offset, url):
         """
         Scrape reviews and include the Place ID in the review metadata.
@@ -164,19 +203,12 @@ class GoogleMapsScraper:
         Returns:
             list[dict]: List of reviews with metadata, including Place ID.
         """
-        # Scroll to load reviews
-        self.__scroll()
-
-        # Wait for other reviews to load (ajax)
+        self.__scroll()  # Intelligent scroll with retry logic
         time.sleep(5)
-
-        # Expand review text
         self.__expand_reviews()
 
-        # Extract Place ID from URL
         place_id = self.extract_place_id_from_url(url)
 
-        # Parse reviews
         response = BeautifulSoup(self.driver.page_source, 'html.parser')
         rblock = response.find_all('div', class_='jftiEf fontBodyMedium')
         parsed_reviews = []
@@ -184,13 +216,14 @@ class GoogleMapsScraper:
         for index, review in enumerate(rblock):
             if index >= offset:
                 r = self.__parse(review)
-                r['place_id'] = place_id  # Add Place ID to each review's metadata
+                if not r.get('id_review'):
+                    self.logger.warning("Skipped a review block due to missing ID.")
+                r['place_id'] = place_id
                 parsed_reviews.append(r)
-
-                # Logging to stdout
                 print(r)
 
         return parsed_reviews
+
 
 
     def extract_place_id_from_url(self, url):
@@ -240,6 +273,10 @@ class GoogleMapsScraper:
             id_review = review['data-review-id']
         except Exception as e:
             id_review = None
+
+        if id_review is None:
+            self.logger.warning("Skipped a review block due to missing ID.")
+
 
         try:
             # TODO: Subject to changes
@@ -433,14 +470,44 @@ class GoogleMapsScraper:
     #     self.driver.execute_script('arguments[0].scrollTop = arguments[0].scrollHeight', scrollable_div)
     #     #self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
 
-    def __scroll(self):
+    # def __scroll(self):
+    #     try:
+    #         # ✅ Wait for reviews container before scrolling
+    #         scrollable_div = WebDriverWait(self.driver, 10).until(
+    #             EC.presence_of_element_located((By.CSS_SELECTOR, 'div.m6QErb.DxyBCb.kA9KIf.dS8AEf'))
+    #         )
+    #         self.driver.execute_script('arguments[0].scrollTop = arguments[0].scrollHeight', scrollable_div)
+    #         time.sleep(2)  # Allow time for reviews to load
+    #     except Exception as e:
+    #         self.logger.error(f"Scrolling failed: {e}")
+
+    def __scroll(self, max_scrolls=40):
         try:
-            # ✅ Wait for reviews container before scrolling
             scrollable_div = WebDriverWait(self.driver, 10).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, 'div.m6QErb.DxyBCb.kA9KIf.dS8AEf'))
             )
-            self.driver.execute_script('arguments[0].scrollTop = arguments[0].scrollHeight', scrollable_div)
-            time.sleep(2)  # Allow time for reviews to load
+
+            last_height = self.driver.execute_script("return arguments[0].scrollHeight", scrollable_div)
+            scroll_attempts = 0
+            no_change_count = 0
+
+            while scroll_attempts < max_scrolls:
+                self.driver.execute_script('arguments[0].scrollTop = arguments[0].scrollHeight', scrollable_div)
+                time.sleep(2)  # Allow time for AJAX to load new reviews
+
+                new_height = self.driver.execute_script("return arguments[0].scrollHeight", scrollable_div)
+                if new_height == last_height:
+                    no_change_count += 1
+                    if no_change_count >= 3:
+                        break  # Stop if no new reviews loaded after 3 attempts
+                else:
+                    no_change_count = 0
+                    last_height = new_height
+
+                scroll_attempts += 1
+
+            print(f"✅ Completed scrolling in {scroll_attempts} attempts.")
+
         except Exception as e:
             self.logger.error(f"Scrolling failed: {e}")
 
