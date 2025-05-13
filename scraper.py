@@ -42,6 +42,8 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
+    all_reviews = []
+
     with GoogleMapsScraper(debug=args.debug) as scraper:
         with open(args.i, 'r') as urls_file:
             for url in urls_file:
@@ -50,35 +52,41 @@ if __name__ == '__main__':
 
                 if args.place:
                     print(scraper.get_account(url))
-                else:
-                    if "place_id:" in url:
-                        place_id = url.split("place_id:")[-1]
-                        url = f"https://www.google.com/maps/place/?q=place_id:{place_id}"
-                    error = scraper.sort_by(url, ind[args.sort_by])
+                    continue
 
-                    all_reviews = []
+                if "place_id:" in url:
+                    place_id = url.split("place_id:")[-1]
+                    url = f"https://www.google.com/maps/place/?q=place_id:{place_id}"
 
-                    if error == 0:
-                        offset = 0
-                        while len(all_reviews) < args.N:
-                            print(colored(f'[Fetching from offset {offset}]', 'cyan'))
-                            reviews = scraper.get_reviews(offset, url)
-                            if not reviews:
-                                break
+                error = scraper.sort_by(url, ind[args.sort_by])
 
-                            for r in reviews:
-                                if len(all_reviews) >= args.N:
-                                    break  # stop if we reached the desired number
-                                r['retrieval_date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                                if args.source:
-                                    r['source_url'] = url
-                                all_reviews.append(r)
+                if error != 0:
+                    print(colored(f'⚠️  Failed to sort reviews for {url}', 'red'))
+                    continue
 
-                            offset += len(reviews)
+                offset = 0
+                local_reviews = []
 
+                while len(local_reviews) < args.N:
+                    print(colored(f'[Fetching from offset {offset}]', 'cyan'))
+                    reviews = scraper.get_reviews(offset, url)
+                    if not reviews:
+                        break
 
-                        s3_key = f"{slug}/{args.o}"
-                        headers = HEADER_W_SOURCE if args.source else HEADER
-                        upload_csv_to_s3(all_reviews, headers, s3_key)
-                    else:
-                        print(colored(f'⚠️  Failed to sort reviews for {url}', 'red'))
+                    for r in reviews:
+                        if len(local_reviews) >= args.N:
+                            break
+                        r['retrieval_date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                        if args.source:
+                            r['source_url'] = url
+                        local_reviews.append(r)
+
+                    offset += len(reviews)
+
+                all_reviews.extend(local_reviews)  # append to global list
+
+    # 🔁 One S3 file with all reviews
+    s3_key = f"combined/{args.o}"
+    headers = HEADER_W_SOURCE if args.source else HEADER
+    upload_csv_to_s3(all_reviews, headers, s3_key)
+
