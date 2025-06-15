@@ -31,7 +31,7 @@ class MonitorS3:
         with GoogleMapsScraper() as scraper:
             for url in self.urls:
                 slug = self.get_slug_from_url(url)
-                s3_key = "combined/all_4_naturals_reviews.csv"
+                s3_key = "combined/all_4_naturals_salons.csv"
 
                 try:
                     # Sort reviews by newest
@@ -110,6 +110,16 @@ class MonitorS3:
         fh.setFormatter(formatter)
         logger.addHandler(fh)
         return logger
+    
+def lambda_handler(event=None, context=None):
+    try:
+        monitor = MonitorS3('urls.txt', 100)
+        monitor.scrape_and_monitor_reviews()
+        return {"status": "Success"}
+    except Exception as e:
+        logging.exception("Unhandled error in Lambda execution")
+        return {"status": "Error", "message": str(e)}
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Monitor Google Maps reviews and store in S3')
